@@ -12,7 +12,6 @@
 #include "configuration.h"
 #include "shape/variant_fwd.h"
 #include "bounding_volume_variant_fwd.h"
-#include "serialization/archive.h"
 
 namespace shape{
     class Box;
@@ -30,6 +29,9 @@ public:
     void stop(void);
     void restart(void);
 
+    bool load(const char* filepath);
+    bool save(const char* filepath)const;
+
     const std::vector<Particle>& particles(void)const;
     const RectangularPBC& pbc(void)const;
     const Configuration& configuration(void)const;
@@ -43,9 +45,6 @@ public:
     int num_collisions(void)const;
 
     bool check_overlaps(void)const;
-
-    friend void serialize(Archive&, const Simulation&);
-    friend void deserialize(Archive&, Simulation*);
 
 private:
     ParticleEvent get_collision_event(int pA, int pB)const;

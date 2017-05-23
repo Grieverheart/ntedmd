@@ -5,10 +5,9 @@
 #include "Simulation.h"
 #include "obj_loader.h"
 #include "io/config_xml.h"
-#include "overlap/overlap.h"
-#include "serialization/archive.h"
 #include <boost/variant/polymorphic_get.hpp>
 
+//TODO: move these to separate file.
 inline void stream_position(Particle& particle, double time){
     particle.xform.pos_ += particle.vel * (time - particle.time);
 }
@@ -45,38 +44,20 @@ double packing_fraction(const Configuration& config){
     return particle_volume / volume;
 }
 
-inline size_t get_file_size(FILE* fp){
-    fseek(fp, 0l, SEEK_END);
-    size_t file_size = ftell(fp);
-    fseek(fp, 0l, SEEK_SET);
-    return file_size;
-}
-
-//TODO: Add function to reset simulation statistics (av_momentum_transfer).
 int main(int argc, char *argv[]){
 
     Simulation* sim;
+    const double check_delta = 0.1;
     const double output_delta = 10.0;
-    double output_start_time = 0.01;
+    double start_time = 0.0;
 
     const auto& directory = argv[3];
 
     if(strcmp(argv[1], "-r") == 0){
-        FILE* fp = fopen(argv[2], "rb");
-        fseek(fp, 0l, SEEK_END);
-        size_t file_size = ftell(fp);
-        fseek(fp, 0l, SEEK_SET);
-        char* data = reinterpret_cast<char*>(malloc(file_size));
-        fread(data, file_size, 1, fp);
-        fclose(fp);
-
-        Archive ar(data, file_size);
         sim = new Simulation();
-        deserialize(ar, sim);
+        sim->load(argv[2]);
 
-        free(data);
-
-        output_start_time = sim->time() + output_delta;
+        start_time = sim->time();
     }
     else{
         Configuration config;
@@ -96,9 +77,9 @@ int main(int argc, char *argv[]){
 
     double pf = packing_fraction(sim->configuration());
 
-    PeriodicCallback output(output_start_time);
-    output.setNextFunction([output_delta](double time){
-        return time + output_delta;
+    PeriodicCallback output(start_time + check_delta);
+    output.setNextFunction([check_delta](double time){
+        return time + check_delta;
     });
 
     FILE* pressure_fp;
@@ -108,8 +89,10 @@ int main(int argc, char *argv[]){
         pressure_fp = fopen(fp_buff, "w");
     }
 
-    output.setCallback([sim, pf, pressure_fp, directory](double time) -> bool {
+    output.setCallback([sim, pf, pressure_fp, directory, output_delta, start_time](double time) -> bool {
         static int nFiles = 0;
+        static double next_output = start_time;
+
         printf("%f\n", time);
 
         //Check for overlaps
@@ -120,23 +103,14 @@ int main(int argc, char *argv[]){
             sim->~Simulation();
             new (sim) Simulation();
 
-            char buff[64];
+            char buff[128];
             sprintf(buff, "%s/archive.pf%.3f.pid%u.bin", directory, pf, getpid());
             printf("Resetting...\n");
-            FILE* fp = fopen(buff, "rb");
-            size_t file_size = get_file_size(fp);
-            char* data = reinterpret_cast<char*>(malloc(file_size));
-            fread(data, file_size, 1, fp);
-            fclose(fp);
 
-            Archive ar(data, file_size);
-            deserialize(ar, sim);
-
+            sim->load(buff);
             sim->restart();
 
             printf("Starting at: %f\n", sim->time());
-
-            free(data);
 
             return false;
         }
@@ -147,23 +121,23 @@ int main(int argc, char *argv[]){
             update_particle(particle, time, config.pbc_);
         }
 
-        char buff[64];
-        sprintf(buff, "%s/pid%u.pf%.3f.step%06u.xml", directory, getpid(), pf, nFiles);
-        xml_save_config(buff, config);
+        if(time >= next_output){
+            char buff[128];
+            sprintf(buff, "%s/pid%u.pf%.3f.step%06u.xml", directory, getpid(), pf, nFiles);
+            xml_save_config(buff, config);
 
-        fprintf(pressure_fp, "%e\t%e\n", sim->time(), sim->average_pressure());
-        fflush(pressure_fp);
+            fprintf(pressure_fp, "%e\t%e\n", sim->time(), sim->average_pressure());
+            fflush(pressure_fp);
 
-        sim->reset_statistics();
+            sim->reset_statistics();
 
-        Archive ar;
-        serialize(ar, *sim);
+            ++nFiles;
+            next_output = time + output_delta;
+        }
+
+        char buff[128];
         sprintf(buff, "%s/archive.pf%.3f.pid%u.bin", directory, pf, getpid());
-        FILE* fp = fopen(buff, "wb");
-        fwrite(ar.data(), 1, ar.size(), fp);
-        fclose(fp);
-
-        ++nFiles;
+        sim->save(buff);
 
         return true;
     });

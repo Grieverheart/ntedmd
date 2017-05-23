@@ -2,7 +2,7 @@
 #include "serialization/common.h"
 
 //NOTE: At some point we should make the box a 3x3 matrix
-template<class T> 
+template<class T>
 static inline T max(T a, T b){
     return (a < b) ? b : a;
 }

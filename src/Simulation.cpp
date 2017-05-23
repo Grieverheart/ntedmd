@@ -8,6 +8,7 @@
 #include "overlap/gjk.h"
 #include "overlap/overlap.h"
 #include "overlap/bv_overlap.h"
+#include "serialization/archive.h"
 #include "serialization/common.h"
 #include "serialization/vector.h"
 #include "serialization/bounding_volume_variant.h"
@@ -26,6 +27,13 @@ static void print_particle(const Particle& p){
 }
 
 namespace{
+    inline size_t get_file_size(FILE* fp){
+        fseek(fp, 0l, SEEK_END);
+        size_t file_size = ftell(fp);
+        fseek(fp, 0l, SEEK_SET);
+        return file_size;
+    }
+
     template<typename F>
     inline bool foreach_pair(const CellList& cll_, F func){
         for(auto cell: cll_.cells()){
@@ -588,7 +596,8 @@ const Configuration& Simulation::configuration(void)const{
     return config_;
 }
 Simulation::Simulation(void):
-    pbc_(config_.pbc_), particles_(config_.particles_), shapes_(config_.shapes_)
+    pbc_(config_.pbc_), particles_(config_.particles_), shapes_(config_.shapes_),
+    box_shapes_(nullptr), boxes_(nullptr), nnl_(nullptr)
 {}
 
 Simulation::~Simulation(void){
@@ -738,6 +747,8 @@ void Simulation::run(double end_time, PeriodicCallback& output_condition){
             break;
         }
 
+        //Check for overlaps. If there are overlaps, restart simulation from previous saved state.
+
         output_condition(time_);
 
         if(time_ >= end_time) is_running_ = false;
@@ -881,54 +892,98 @@ double Simulation::average_pressure(void)const{
     return pressure;
 }
 
-void serialize(Archive& ar, const Simulation& sim){
-    serialize(ar, sim.time_);
-    serialize(ar, sim.prev_time_);
-    serialize(ar, sim.statistics_start_time_);
-    serialize(ar, sim.closest_distance_tol_);
-    serialize(ar, sim.obb_margin_);
-    serialize(ar, sim.max_collision_time_);
-    serialize(ar, sim.av_momentum_transfer_);
-    serialize(ar, sim.av_kinetic_delta_);
-    serialize(ar, sim.base_kinetic_energy_);
-    serialize(ar, sim.kinetic_delta_);
-    serialize(ar, sim.max_inflight_time_);
-    serialize(ar, sim.n_collision_events_);
-    serialize(ar, sim.n_collisions_);
-    serialize(ar, sim.config_);
+bool Simulation::load(const char* filepath){
+    FILE* fp = fopen(filepath, "rb");
+    if(!fp) return false;
 
-    for(size_t i = 0; i < sim.shapes_.size(); ++i) serialize(ar, *sim.box_shapes_[i]);
-    serialize(ar, sim.boxes_, sim.particles_.size());
-    for(size_t i = 0; i < sim.particles_.size(); ++i) serialize(ar, sim.nnl_[i]);
+    size_t file_size = get_file_size(fp);
+    char* data = reinterpret_cast<char*>(malloc(file_size));
+    if(!data) return false;
 
-    serialize(ar, sim.event_mgr_);
-    serialize(ar, sim.cll_);
+    //Delete previous data
+    if(box_shapes_){
+        for(size_t i = 0; i < shapes_.size(); ++i) delete box_shapes_[i];
+        delete[] box_shapes_;
+    }
+    delete[] boxes_;
+    delete[] nnl_;
+
+    //We also need to delete stack allocated variables because the dynamic
+    //memory they allocate needs to be reallocated.
+    cll_.~CellList();
+    new (&cll_) CellList();
+    config_.~Configuration();
+    new (&config_) Configuration();
+    event_mgr_.~EventManager();
+    new (&event_mgr_) EventManager();
+
+    fread(data, file_size, 1, fp);
+    fclose(fp);
+
+    Archive ar(data, file_size);
+
+    deserialize(ar, &time_);
+    deserialize(ar, &prev_time_);
+    deserialize(ar, &statistics_start_time_);
+    deserialize(ar, &closest_distance_tol_);
+    deserialize(ar, &obb_margin_);
+    deserialize(ar, &max_collision_time_);
+    deserialize(ar, &av_momentum_transfer_);
+    deserialize(ar, &av_kinetic_delta_);
+    deserialize(ar, &base_kinetic_energy_);
+    deserialize(ar, &kinetic_delta_);
+    deserialize(ar, &max_inflight_time_);
+    deserialize(ar, &n_collision_events_);
+    deserialize(ar, &n_collisions_);
+    deserialize(ar, &config_);
+
+    box_shapes_ = new bounding_volume::Variant*[shapes_.size()];
+    for(size_t i = 0; i < shapes_.size(); ++i) deserialize(ar, &box_shapes_[i]);
+    boxes_ = new Transform[particles_.size()];
+    deserialize(ar, boxes_, particles_.size());
+
+    nnl_ = new std::vector<size_t>[particles_.size()];
+    for(size_t i = 0; i < particles_.size(); ++i) deserialize(ar, &nnl_[i]);
+
+    deserialize(ar, &event_mgr_);
+    deserialize(ar, &cll_);
+
+    free(data);
+
+    return true;
 }
 
-void deserialize(Archive& ar, Simulation* sim){
-    deserialize(ar, &sim->time_);
-    deserialize(ar, &sim->prev_time_);
-    deserialize(ar, &sim->statistics_start_time_);
-    deserialize(ar, &sim->closest_distance_tol_);
-    deserialize(ar, &sim->obb_margin_);
-    deserialize(ar, &sim->max_collision_time_);
-    deserialize(ar, &sim->av_momentum_transfer_);
-    deserialize(ar, &sim->av_kinetic_delta_);
-    deserialize(ar, &sim->base_kinetic_energy_);
-    deserialize(ar, &sim->kinetic_delta_);
-    deserialize(ar, &sim->max_inflight_time_);
-    deserialize(ar, &sim->n_collision_events_);
-    deserialize(ar, &sim->n_collisions_);
-    deserialize(ar, &sim->config_);
+bool Simulation::save(const char* filepath)const{
 
-    sim->box_shapes_ = new bounding_volume::Variant*[sim->shapes_.size()];
-    for(size_t i = 0; i < sim->shapes_.size(); ++i) deserialize(ar, &sim->box_shapes_[i]);
-    sim->boxes_ = new Transform[sim->particles_.size()];
-    deserialize(ar, sim->boxes_, sim->particles_.size());
+    FILE* fp = fopen(filepath, "wb");
+    if(!fp) return false;
 
-    sim->nnl_ = new std::vector<size_t>[sim->particles_.size()];
-    for(size_t i = 0; i < sim->particles_.size(); ++i) deserialize(ar, &sim->nnl_[i]);
+    Archive ar;
 
-    deserialize(ar, &sim->event_mgr_);
-    deserialize(ar, &sim->cll_);
+    serialize(ar, time_);
+    serialize(ar, prev_time_);
+    serialize(ar, statistics_start_time_);
+    serialize(ar, closest_distance_tol_);
+    serialize(ar, obb_margin_);
+    serialize(ar, max_collision_time_);
+    serialize(ar, av_momentum_transfer_);
+    serialize(ar, av_kinetic_delta_);
+    serialize(ar, base_kinetic_energy_);
+    serialize(ar, kinetic_delta_);
+    serialize(ar, max_inflight_time_);
+    serialize(ar, n_collision_events_);
+    serialize(ar, n_collisions_);
+    serialize(ar, config_);
+
+    for(size_t i = 0; i < shapes_.size(); ++i) serialize(ar, *box_shapes_[i]);
+    serialize(ar, boxes_, particles_.size());
+    for(size_t i = 0; i < particles_.size(); ++i) serialize(ar, nnl_[i]);
+
+    serialize(ar, event_mgr_);
+    serialize(ar, cll_);
+
+    fwrite(ar.data(), 1, ar.size(), fp);
+    fclose(fp);
+
+    return true;
 }
