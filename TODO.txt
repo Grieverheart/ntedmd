@@ -15,11 +15,12 @@
 [X] Make sure asymmetric particles are working.
 [X] Make sure mixtures of different particle shapes are working.
 [X] Implement more shapes.
+[ ] Replace gjk routines with ntcd.
 [ ] Find a boost.variant replacement or roll your own (move semantics would be nice).
-[ ] Implement Complex shapes.
+[ ] Implement Complex shapes. Bounding boxes should be per subshape. Per subshape array containing pointer to Particle?
+[ ] Make into library.
 [ ] Implement hard walls.
 [ ] Improve simulation callback (PeriodicCallback).
 [ ] Consider using Cereal for (de)serialization.
 [ ] Try implementing TOI using SAT for polyhedra, and compare performance.
 [ ] Use relative time to improve numerical precision.
-[ ] Make into library?
